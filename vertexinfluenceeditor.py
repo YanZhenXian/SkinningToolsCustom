@@ -1,0 +1,289 @@
+# -*- coding: utf-8 -*-
+import functools
+from SkinningTools.Maya import api
+from SkinningTools.py23 import *
+from SkinningTools.UI.qt_util import *
+from SkinningTools.UI.utils import *
+from SkinningTools.UI.ControlSlider.sliderControl import SliderControl
+
+
+
+class VertexInfluenceEditor(QGroupBox):
+    lockIcon = QIcon(':/nodeGrapherUnlocked.png')
+    unlockIcon = QIcon(':/lockGeneric.png')
+
+    def __lineEdit_FieldEditted(self, *_):
+        self.sender().setStyleSheet('')
+        if set(self.sender().displayText()).difference(set(".0123456789")):
+            self.sender().setStyleSheet('background-color: #f00;')
+
+    def __init__(self, skinCluster, vtxLName, skinBones, weights, parent=None):
+        super(VertexInfluenceEditor, self).__init__(parent=None)
+        self.setMinimumHeight(0)
+
+        self.__info = {}
+        self._hideZero = True
+        self.__sliders = []
+        self._solver = WeightSolver.Uniform
+
+        if len(vtxLName) > 1:
+            self.setTitle("Multi Slider")
+            try:
+                self.setToolTip(str(api.getIds(vtxLName)))
+            except:
+                pass
+        else:
+            self.setTitle(vtxLName[0].rsplit('|', 1)[-1])
+            self.setToolTip(str(vtxLName))
+
+        self.setLayout(nullVBoxLayout())
+
+        self.__target = (skinCluster, vtxLName)
+        self.__influences = skinBones
+        self.__busyWithCallback = False
+
+        # for i, skBone in enumerate(skinBones):
+        #     sliderLayout = nullHBoxLayout()
+        #     sliderFrame = QWidget()
+        #     sliderFrame.setLayout(sliderLayout)
+        #     sliderFrame.isUsed = True
+        #
+        #     gripSlider = SliderControl(skBone, label=skBone.rsplit('|', 1)[-1], mn=0.0, mx=1.0, rigidRange=True, labelOnSlider=True)
+        #     gripSlider.slider.setValue(weights[i])
+        #
+        #     gripSlider.startScrub.connect(partial(api.startUndo, "skinSliderChunk"))
+        #     gripSlider.endScrub.connect(partial(api.endUndo, "skinSliderChunk"))
+        #     gripSlider.slider.valueChanged.connect(functools.partial(self.__updateWeights, i))
+        #     gripSlider.lineEdit.textEdited[unicode].connect(self.__lineEdit_FieldEditted)
+        #
+        #     sliderLayout.addWidget(gripSlider)
+        #     lbl = VertexInfluenceEditor.lockIcon
+        #     parent = self.layout()
+        #
+        #     if weights[i] <= 0.00001:
+        #         lbl = VertexInfluenceEditor.unlockIcon
+        #         sliderFrame.isUsed = False
+        #         gripSlider.setEnabled(False)
+        #
+        #     lockButton = QPushButton(lbl, '')
+        #     lockButton.clicked.connect(functools.partial(self.__toggleLock, i))
+        #
+        #     lockButton.setStyleSheet("")
+        #     if lbl == VertexInfluenceEditor.unlockIcon:
+        #         lockButton.setStyleSheet("background-color: lightred")
+        #
+        #     sliderLayout.addWidget(lockButton)
+        #     parent.addWidget(sliderFrame)
+        #
+        #     self.__info[skBone] = sliderFrame
+        #     self.__sliders.append((gripSlider, lockButton))
+        for i, skBone in enumerate(skinBones):
+            sliderLayout = nullHBoxLayout()
+
+            sliderFrame = QWidget()
+            sliderFrame.setLayout(sliderLayout)
+            sliderFrame.isUsed = True
+
+            gripSlider = SliderControl(
+                skBone,
+                label=skBone.rsplit('|', 1)[-1],
+                mn=0.0,
+                mx=1.0,
+                rigidRange=True,
+                labelOnSlider=True
+            )
+            gripSlider.slider.setValue(weights[i])
+
+            gripSlider.startScrub.connect(partial(api.startUndo, "skinSliderChunk"))
+            gripSlider.endScrub.connect(partial(api.endUndo, "skinSliderChunk"))
+            gripSlider.slider.valueChanged.connect(
+                functools.partial(self.__updateWeights, i)
+            )
+            gripSlider.lineEdit.textEdited[unicode].connect(
+                self.__lineEdit_FieldEditted
+            )
+
+            sliderLayout.addWidget(gripSlider)
+
+            lbl = VertexInfluenceEditor.lockIcon
+            parent = self.layout()
+
+            if weights[i] <= 0.00001:
+                lbl = VertexInfluenceEditor.unlockIcon
+                sliderFrame.isUsed = False
+                gripSlider.setEnabled(False)
+
+            lockButton = QPushButton(lbl, '')
+            lockButton.clicked.connect(
+                functools.partial(self.__toggleLock, i)
+            )
+
+            lockButton.setStyleSheet("")
+            if lbl == VertexInfluenceEditor.unlockIcon:
+                lockButton.setStyleSheet("background-color: lightred")
+
+            sliderLayout.addWidget(lockButton)
+
+            # ======== 右键菜单（稳定方案）========
+            for w in (sliderFrame, gripSlider, gripSlider.slider, lockButton):
+                w.setContextMenuPolicy(Qt.CustomContextMenu)
+                w.customContextMenuRequested.connect(
+                    functools.partial(self._showJointContextMenu, skBone)
+                )
+            # =====================================
+
+            parent.addWidget(sliderFrame)
+
+            self.__info[skBone] = sliderFrame
+            self.__sliders.append((gripSlider, lockButton))
+
+    def _setSolver(self, idx):
+        if isinstance(idx, int):
+            self._solver = [WeightSolver.Uniform, WeightSolver.PriorityLow, WeightSolver.PriorityHigh][idx]
+        else:
+            self._solver = idx
+
+    solver = property(None, _setSolver)
+
+    def hideZero(self, state):
+        self._hideZero = state
+
+    def _showJointContextMenu(self, joint, pos):
+        """
+        右键 joint 行的上下文菜单
+        """
+        import maya.cmds as cmds
+        from PySide2.QtWidgets import QMenu
+        from PySide2.QtGui import QCursor
+
+        if not joint or not cmds.objExists(joint):
+            return
+
+        menu = QMenu(self)
+        menu.addAction(u"选择骨骼", lambda: cmds.select(joint, r=True))
+        menu.addAction(u"加选骨骼", lambda: cmds.select(joint, add=True))
+        menu.addSeparator()
+        menu.addAction(
+            u"聚焦骨骼",
+            lambda: (cmds.select(joint, r=True), cmds.viewFit())
+        )
+
+        # CustomContextMenu 给的是局部坐标，直接用当前鼠标位置最稳
+        menu.exec_(QCursor.pos())
+
+    def showBones(self, inBones):
+        for bone, frame in self.__info.items():
+            if self._hideZero:
+                if frame.isUsed and bone in inBones:
+                    frame.setVisible(True)
+                else:
+                    frame.setVisible(False)
+            else:
+                frame.setVisible(bone in inBones)
+
+    def getCurrentBones(self):
+        return self.__info.keys()
+
+    def __toggleLock(self, index):
+        slider, button = self.__sliders[index]
+        if slider.isEnabled():
+            button.setIcon(VertexInfluenceEditor.unlockIcon)
+            slider.setEnabled(False)
+            button.setStyleSheet("background-color: lightred")
+        else:
+            button.setIcon(VertexInfluenceEditor.lockIcon)
+            slider.setEnabled(True)
+            button.setStyleSheet("")
+
+    def __updateWeights(self, setId, newValue):
+        """
+        normalize all other weights so we can cleanly inject the new value
+
+        calculate what weight will remain after injecting the new value
+        then multiply all other weights by that value, so that all other weights added together = the remainder
+        this works because the sum of all weights is first made to be 1.0, then we do (1.0 * 1.0 - newValue) where each 1.0 is actually the list of weights
+
+        these steps are optimized to 'find the total value we should divide by to normalize'
+        and 'multiply by the remainder and divide by the total value at the same time', so instead of 2 steps (normalize and multiply separately)
+        we just multiply by a ratio of (1.0 - newValue) / initialRemainderTotal
+
+        the target weight can be set either at the start or at the end because it's index is otherwise ignored
+        """
+        if self.__busyWithCallback:
+            # callback fired by a setValue which was called by another slider's updateWeights
+            return
+        self.__busyWithCallback = True
+
+        numSliders = len(self.__sliders)
+        if numSliders - 1 == 0:
+            return  # no other sliders to edit
+
+        weights = self.uniformNormalisation(setId, numSliders, newValue)
+        
+        self.__busyWithCallback = False
+
+        # apply to skincluster
+        stack = []
+        for i in range(numSliders):
+            stack.append((self.__influences[i], weights[i]))
+
+        api.skinPercent(*self.__target, normalize=True, transformValue=stack)
+
+    
+    def uniformNormalisation(self, setId, numSliders, newValue):
+        """
+        updated formula to add new normalisation elements (low priority and high priority)
+        based on code supplied by Rémi Deletrain
+        """
+        offset = newValue
+        totalValue = 0.0
+        totalLength = 0.0
+        for i in range(numSliders):
+            if i == setId:
+                continue
+            slider, __ = self.__sliders[i]
+            if not slider.isEnabled():
+                totalLength += slider.slider.value()
+
+        if offset > (1.0 - totalLength):
+            offset = (1.0 - totalLength)
+            newValue = offset
+
+        weights = [0.0] * numSliders
+        for i in range(numSliders):
+            if i == setId:
+                continue
+            slider, __ = self.__sliders[i]
+            if not slider.isEnabled():
+                offset += slider.slider.value()
+                continue
+            weights[i] = slider.slider.value()
+            totalValue += weights[i]
+
+        weights[setId] = newValue
+        if totalValue == 0:
+            scale = (1.0 - offset) / (numSliders - 1)
+        else:
+            scale = (1.0 - offset) / totalValue
+        for i in range(numSliders):
+            if i == setId:
+                continue
+            slider, __ = self.__sliders[i]
+            if not slider.isEnabled():
+                if slider.slider.value() == 0.0:
+                    continue
+                else:
+                    weights[i] = slider.slider.value()
+                continue
+            
+            if self._solver == WeightSolver.PriorityLow:
+                weights[i] = max(1e-8, weights[i]) * scale
+            elif self._solver == WeightSolver.PriorityHigh:
+                weights[i] *= (weights[i] / totalValue) if totalValue > 0 else scale
+            elif totalValue == 0:
+                weights[i] = scale
+            else:
+                weights[i] *= scale
+            
+            slider.slider.setValue(weights[i])
+        return weights
